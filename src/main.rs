@@ -27,7 +27,10 @@ use std::io::{
 
 use std::fmt;
 
-use tokio::signal;
+use tokio::signal::unix::{
+    signal,
+    SignalKind,
+};
 
 fn sanitize_string(s: &str) -> String {
     s.chars()
@@ -116,6 +119,9 @@ async fn main() {
 
     let mut notifications = pool.notifications();
 
+    let mut ctrl_c = signal(SignalKind::interrupt())
+        .expect("Ctrl+C Handler");
+
     loop {
         tokio::select! {
             notification = notifications.recv() => {
@@ -156,7 +162,7 @@ async fn main() {
                     }
                 }
             }
-            _ = signal::ctrl_c() => {
+            _ = ctrl_c.recv() => {
                 break;
             }
         }
