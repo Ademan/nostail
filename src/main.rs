@@ -21,6 +21,8 @@ use std::io::{
 
 use std::fmt;
 
+use tokio::signal;
+
 fn sanitize_string(s: &str) -> String {
     s.chars()
         .map(|c|
@@ -84,39 +86,46 @@ async fn main() {
     let mut notifications = pool.notifications();
 
     loop {
-        match notifications.recv().await {
-            Ok(RelayPoolNotification::Event(url, event)) => {
-                if let Some(stats) = kind_stats.get_mut(&event.kind) {
-                    stats.seen();
-                } else {
-                    let mut stats = KindStats::default();
-                    stats.seen();
+        tokio::select! {
+            notification = notifications.recv() => {
+                match notification {
+                    Ok(RelayPoolNotification::Event(url, event)) => {
+                        if let Some(stats) = kind_stats.get_mut(&event.kind) {
+                            stats.seen();
+                        } else {
+                            let mut stats = KindStats::default();
+                            stats.seen();
 
-                    kind_stats.insert(event.kind, stats);
+                            kind_stats.insert(event.kind, stats);
+                        }
+
+                        let kind: u64 = event.kind.into();
+                        println!("event kind {kind}!");
+                    },
+                    Ok(RelayPoolNotification::Message(..)) |
+                    Ok(RelayPoolNotification::RelayStatus{..}) => {
+                        //println!("message or relay status");
+                    },
+                    Ok(RelayPoolNotification::Stop) => {
+                        println!("stop!");
+                        break;
+                    },
+                    Ok(RelayPoolNotification::Shutdown) => {
+                        eprintln!("shutdown!");
+                        break;
+                    },
+                    Err(e) => {
+                        eprintln!("error! {e}");
+                    }
                 }
-
-                let kind: u64 = event.kind.into();
-                println!("event kind {kind}!");
-            },
-            Ok(RelayPoolNotification::Message(..)) |
-            Ok(RelayPoolNotification::RelayStatus{..}) => {
-                //println!("message or relay status");
-            },
-            Ok(RelayPoolNotification::Stop) => {
-                println!("stop!");
+            }
+            _ = signal::ctrl_c() => {
                 break;
-            },
-            Ok(RelayPoolNotification::Shutdown) => {
-                eprintln!("shutdown!");
-                break;
-            },
-            Err(e) => {
-                eprintln!("error! {e}");
             }
         }
     }
 
     for (kind, stats) in kind_stats.iter() {
-        println!("{kind} => {stats}");
+        println!("Kind {kind} => {stats}");
     }
 }
