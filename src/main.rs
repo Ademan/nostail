@@ -4,6 +4,25 @@ use clap::{
     Subcommand,
 };
 
+use crossterm::event::{
+    EventStream,
+    Event,
+    KeyCode,
+    KeyEvent,
+    KeyModifiers,
+};
+
+use crossterm::terminal::{
+    disable_raw_mode,
+    enable_raw_mode,
+};
+
+use futures::stream::{
+    Stream,
+};
+
+use futures::StreamExt;
+
 use nostr_sdk::{
     ClientMessage,
     Filter,
@@ -21,16 +40,29 @@ use std::collections::{
     btree_map::BTreeMap,
 };
 
-use std::io::{
-    stdout,
+use std::{
+    str,
 };
 
 use std::fmt;
 
-use tokio::signal::unix::{
-    signal,
-    SignalKind,
-};
+struct RawTerm { }
+
+impl RawTerm {
+    pub fn new() -> Self {
+        enable_raw_mode()
+            .expect("Enable raw mode");
+
+        Self { }
+    }
+}
+
+impl Drop for RawTerm {
+    fn drop(&mut self) {
+        disable_raw_mode()
+            .expect("Disable raw mode");
+    }
+}
 
 fn sanitize_string(s: &str) -> String {
     s.chars()
@@ -117,16 +149,25 @@ async fn main() {
 
     let mut kind_stats: BTreeMap<Kind, KindStats> = BTreeMap::new();
 
+    // pause event display
+    let mut pause = false;
+
     let mut notifications = pool.notifications();
 
-    let mut ctrl_c = signal(SignalKind::interrupt())
-        .expect("Ctrl+C Handler");
+    // RAII handling of enable/disable raw term
+    let _term = RawTerm::new();
+
+    let mut term_events = EventStream::new();
 
     loop {
         tokio::select! {
             notification = notifications.recv() => {
                 match notification {
                     Ok(RelayPoolNotification::Event(_url, event)) => {
+                        if pause {
+                            continue;
+                        }
+
                         if let Some(stats) = kind_stats.get_mut(&event.kind) {
                             stats.seen();
                         } else {
@@ -139,38 +180,55 @@ async fn main() {
                         let kind: u64 = event.kind.into();
                         if args.content {
                             let content = sanitize_string(event.content.as_ref());
-                            println!("kind {kind} => {content}");
+                            let printable_content = str::replace(content.as_ref(), "\n", "\r\n");
+                            println!("Kind {kind} => {printable_content}\r");
                         } else {
-                            println!("kind {kind}");
+                            println!("Kind {kind}\r");
                         }
                     },
                     Ok(RelayPoolNotification::Message(..)) => {
                     },
                     Ok(RelayPoolNotification::RelayStatus{..}) => {
-                        println!("relay status");
+                        println!("relay status\r");
                     },
                     Ok(RelayPoolNotification::Stop) => {
-                        println!("stop!");
+                        println!("stop!\r");
                         break;
                     },
                     Ok(RelayPoolNotification::Shutdown) => {
-                        eprintln!("shutdown!");
+                        eprintln!("shutdown!\r");
                         break;
                     },
                     Err(e) => {
-                        eprintln!("error! {e}");
+                        eprintln!("error! {e}\r");
                     }
                 }
             }
-            _ = ctrl_c.recv() => {
-                break;
+            event = term_events.next() => {
+                match event {
+                    Some(Ok(Event::Key(KeyEvent { code: KeyCode::Char('p'), .. }))) => {
+                        pause = !pause;
+
+                        if pause {
+                            println!("PAUSED\r");
+                        } else {
+                            println!("UNPAUSED\r");
+                        }
+                    },
+                    Some(Ok(Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, .. }))) => {
+                        if modifiers.contains(KeyModifiers::CONTROL) {
+                            break;
+                        }
+                    }
+                    _ => { }
+                }
             }
         }
     }
 
     if args.stats {
         for (kind, stats) in kind_stats.iter() {
-            println!("Kind {kind} => {stats}");
+            println!("Kind {kind} => {stats}\r");
         }
     }
 }
