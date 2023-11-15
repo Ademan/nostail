@@ -1,3 +1,9 @@
+use clap::{
+    Args,
+    Parser,
+    Subcommand,
+};
+
 use nostr_sdk::{
     ClientMessage,
     Filter,
@@ -37,6 +43,25 @@ fn sanitize_string(s: &str) -> String {
         .collect()
 }
 
+#[derive(Parser)]
+#[command( name = "nostail" )]
+struct Arguments {
+    #[arg( short = 'r', long = "relay" )]
+    relays: Vec<String>,
+
+    #[arg( short = 'k', long = "kind" )]
+    kinds: Vec<u64>,
+
+    #[arg( short = 's', long = "stats" , default_value = "false" )]
+    stats: bool,
+
+    #[arg( short = 'c', long = "content" , default_value = "false" )]
+    content: bool,
+
+    #[arg( short = 't', long = "show-tags", default_value = "false" )]
+    show_tags: bool,
+}
+
 struct KindStats {
     pub seen: u64,
 }
@@ -63,19 +88,25 @@ impl fmt::Display for KindStats {
 
 #[tokio::main]
 async fn main() {
+    let args = Arguments::parse();
+
     let pool_options = RelayPoolOptions::default();
 
     let pool = RelayPool::new(pool_options);
 
     let relay_options = RelayOptions::default();
 
-    pool.add_relay("wss://relay.damus.io", None, relay_options)
-        .await
-        .expect("add damus relay");
+    for relay_url in args.relays.iter() {
+        pool.add_relay(&relay_url[..], None, relay_options.clone())
+            .await
+            .expect(format!("add relay \"{relay_url}\"").as_ref());
+    }
 
     let mut filters: Vec<Filter> = Vec::new();
     let mut filter = Filter::new();
-    //filter.kinds.insert(1.into());
+    for &kind in args.kinds.iter() {
+        filter.kinds.insert(kind.into());
+    }
     filters.push(filter);
     pool.subscribe(filters, None).await;
 
@@ -89,7 +120,7 @@ async fn main() {
         tokio::select! {
             notification = notifications.recv() => {
                 match notification {
-                    Ok(RelayPoolNotification::Event(url, event)) => {
+                    Ok(RelayPoolNotification::Event(_url, event)) => {
                         if let Some(stats) = kind_stats.get_mut(&event.kind) {
                             stats.seen();
                         } else {
@@ -100,11 +131,17 @@ async fn main() {
                         }
 
                         let kind: u64 = event.kind.into();
-                        println!("event kind {kind}!");
+                        if args.content {
+                            let content = sanitize_string(event.content.as_ref());
+                            println!("kind {kind} => {content}");
+                        } else {
+                            println!("kind {kind}");
+                        }
                     },
-                    Ok(RelayPoolNotification::Message(..)) |
+                    Ok(RelayPoolNotification::Message(..)) => {
+                    },
                     Ok(RelayPoolNotification::RelayStatus{..}) => {
-                        //println!("message or relay status");
+                        println!("relay status");
                     },
                     Ok(RelayPoolNotification::Stop) => {
                         println!("stop!");
@@ -125,7 +162,9 @@ async fn main() {
         }
     }
 
-    for (kind, stats) in kind_stats.iter() {
-        println!("Kind {kind} => {stats}");
+    if args.stats {
+        for (kind, stats) in kind_stats.iter() {
+            println!("Kind {kind} => {stats}");
+        }
     }
 }
